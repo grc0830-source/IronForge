@@ -3,7 +3,7 @@
     "version": ">= 21.7.0",
     "appVersionSource": "remote"
   },
- "build": {
+  "build": {
     "development": {
       "developmentClient": true,
       "distribution": "internal",
@@ -13,7 +13,7 @@
       "distribution": "internal",
       "environment": "preview"
     },
-  "ios-simulator": {
+    "ios-simulator": {
       "extends": "preview",
       "ios": {
         "simulator": true
@@ -22,8 +22,20 @@
     "production": {
       "autoIncrement": true,
       "environment": "production"
+    },
+    "android-preview": {
+      "extends": "preview",
+      "android": {
+        "buildType": "apk"
+      }
+    },
+    "android-production": {
+      "extends": "production",
+      "android": {
+        "buildType": "app-bundle"
+      }
     }
-   },
+  },
   "submit": {
     "production": {}
   }

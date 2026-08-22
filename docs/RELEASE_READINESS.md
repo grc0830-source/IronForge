@@ -1,6 +1,6 @@
 # Fortomnia Release Readiness
 
-Last updated: August 12, 2026
+Last updated: August 21, 2026
 
 ## Automated validation
 
@@ -103,6 +103,24 @@ The remaining npm audit findings are inherited through Expo and Metro build tool
 - [x] Configure a monitored support email address.
 - [x] Configure domain email authentication and delivery.
 - [ ] Add website and policy URLs to App Store Connect.
+
+## Milestone 14 release-candidate verification
+
+The checked iPhone items above describe the frozen Milestone 13 App Store submission. Milestone 14 adds training intelligence, Android support, multi-metric workouts, Imperial measurements, post-set feedback, and workout recaps. These changes require a fresh device pass before release.
+
+- [x] GitHub Actions passes on the current Milestone 14 branch.
+- [x] Android preview and production build profiles are explicit.
+- [x] Multi-metric progression and feedback have automated coverage.
+- [x] Imperial/Metric conversions have automated coverage.
+- [ ] Install the exact Milestone 14 release build on a physical iPhone.
+- [ ] Install the exact Milestone 14 preview build on a physical Android phone.
+- [ ] Complete the cross-platform smoke matrix in `docs/MILESTONE_14_DEVICE_TEST_MATRIX.md`.
+- [ ] Verify a fresh account, email confirmation, password reset, sign-out, and account deletion on the release build.
+- [ ] Verify coaching targets, post-set feedback, workout completion, and recap on both platforms.
+- [ ] Verify Imperial and Metric profile/nutrition flows on both platforms.
+- [ ] Test airplane-mode launch and recovery after reconnecting.
+- [ ] Record and resolve every release-blocking defect.
+- [ ] Tag the exact approved commit used for store builds.
 
 ## Release approval
 

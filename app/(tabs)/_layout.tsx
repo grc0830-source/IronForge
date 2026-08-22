@@ -95,6 +95,8 @@ export default function TabLayout() {
         }}
       />
 
+      <Tabs.Screen name="ai-coach" options={{ href: null }} />
+      <Tabs.Screen name="program-builder" options={{ href: null }} />
       <Tabs.Screen name="new-workout" options={{ href: null }} />
       <Tabs.Screen name="new-template" options={{ href: null }} />
       <Tabs.Screen

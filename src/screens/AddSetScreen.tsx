@@ -14,7 +14,20 @@ import { ExercisePicker } from "../components/ExercisePicker";
 import { useExercises } from "../hooks/useExercises";
 import { useProfile } from "../hooks/useProfile";
 import { usePreviousExerciseSet } from "../hooks/usePreviousExerciseSet";
-import { getRepsFirstSuggestion } from "../lib/progression";
+import { useRecoveryCheckIns } from "../hooks/useRecoveryCheckIns";
+import {
+  defaultMetricUnit,
+  DISTANCE_UNITS,
+  PERFORMANCE_LABELS,
+  PERFORMANCE_TYPES,
+  type MetricUnit,
+  type PerformanceType,
+} from "../lib/performanceMetrics";
+import {
+  DEFAULT_PROGRESSION_RULES,
+  getExerciseRecommendation,
+  getMetricProgressionRecommendation,
+} from "../lib/progression";
 import { supabase } from "../lib/supabase";
 import { useAuth } from "../providers/AuthProvider";
 
@@ -22,21 +35,35 @@ export default function AddSetScreen() {
   const router = useRouter();
     const {
     exerciseId: initialExerciseId,
+    durationSeconds: initialDurationSeconds,
     id,
+    metricUnit: initialMetricUnit,
+    metricValue: initialMetricValue,
+    parentSetId: initialParentSetId,
+    performanceType: initialPerformanceType,
     repMax: initialRepMax,
     repMin: initialRepMin,
     reps: initialReps,
     rir: initialRir,
     setId,
+    setType: initialSetType,
+    setVariant: initialSetVariant,
     weight: initialWeight,
   } = useLocalSearchParams<{
+    durationSeconds?: string;
     exerciseId?: string;
     id: string;
+    metricUnit?: MetricUnit;
+    metricValue?: string;
+    parentSetId?: string;
+    performanceType?: PerformanceType;
     repMax?: string;
     repMin?: string;
     reps?: string;
     rir?: string;
     setId?: string;
+    setType?: "warmup" | "working";
+    setVariant?: "standard" | "drop";
     weight?: string;
   }>();
 
@@ -47,9 +74,31 @@ export default function AddSetScreen() {
   const { session } = useAuth();
   const { exercises, isLoading } = useExercises();
   const { profile } = useProfile();
+  const { days: recoveryDays } = useRecoveryCheckIns();
 
   const [exerciseId, setExerciseId] = useState<string | null>(
     initialExerciseId ?? null,
+  );
+  const parentSetId = Array.isArray(initialParentSetId)
+    ? initialParentSetId[0]
+    : initialParentSetId;
+  const [setVariant, setSetVariant] = useState<"standard" | "drop">(
+    initialSetVariant === "drop" ? "drop" : "standard",
+  );
+  const [performanceType, setPerformanceType] = useState<PerformanceType>(
+    PERFORMANCE_TYPES.includes(initialPerformanceType as PerformanceType)
+      ? (initialPerformanceType as PerformanceType)
+      : "reps",
+  );
+  const [metricValue, setMetricValue] = useState(initialMetricValue ?? "");
+  const [metricUnit, setMetricUnit] = useState<MetricUnit>(
+    initialMetricUnit ?? "meters",
+  );
+  const [durationSeconds, setDurationSeconds] = useState(
+    initialDurationSeconds ?? "",
+  );
+  const [setType, setSetType] = useState<"warmup" | "working">(
+    initialSetType === "warmup" ? "warmup" : "working",
   );
   const [weight, setWeight] = useState(initialWeight ?? "0");
   const [reps, setReps] = useState(initialReps ?? "");
@@ -60,16 +109,62 @@ export default function AddSetScreen() {
     isLoadingPrevious,
     previousError,
     previousSet,
-  } = usePreviousExerciseSet(exerciseId, workoutId);
+    previousSets,
+  } = usePreviousExerciseSet(exerciseId, workoutId, performanceType);
 
-  const progressionSuggestion = previousSet
-    ? getRepsFirstSuggestion({
-        reps: previousSet.reps,
-        repsInReserve: previousSet.reps_in_reserve,
-        weight: previousSet.weight,
-        weightUnit: previousSet.weight_unit,
-      })
-    : null;
+  const parsedRepMin = initialRepMin === undefined
+    ? undefined
+    : Number(initialRepMin);
+  const parsedRepMax = initialRepMax === undefined
+    ? undefined
+    : Number(initialRepMax);
+  const progressionSuggestion = getExerciseRecommendation(
+    previousSets.map((set) => ({
+      performedAt: set.performed_at,
+      reps: set.reps,
+      repsInReserve: set.reps_in_reserve,
+      sessionId: set.session_id,
+      weight: set.weight,
+      weightUnit: set.weight_unit,
+    })),
+    {
+      repMax:
+        parsedRepMax !== undefined && Number.isFinite(parsedRepMax)
+          ? parsedRepMax
+          : undefined,
+      repMin:
+        parsedRepMin !== undefined && Number.isFinite(parsedRepMin)
+          ? parsedRepMin
+          : undefined,
+    },
+    DEFAULT_PROGRESSION_RULES,
+    recoveryDays.map((day) => ({
+      band: day.readiness.band,
+      checkinDate: day.checkin_date,
+      score: day.readiness.score,
+    })),
+  );
+  const metricProgressionSuggestion =
+    performanceType === "reps"
+      ? null
+      : getMetricProgressionRecommendation(
+          previousSets.map((set) => ({
+            durationSeconds: set.duration_seconds,
+            metricUnit: set.metric_unit,
+            metricValue: set.metric_value,
+            performedAt: set.performed_at,
+            performanceType: set.performance_type as
+              | "time"
+              | "distance"
+              | "calories"
+              | "rounds",
+          })),
+          recoveryDays.map((day) => ({
+            band: day.readiness.band,
+            checkinDate: day.checkin_date,
+            score: day.readiness.score,
+          })),
+        );
 
   function applyProgressionSuggestion() {
     if (!progressionSuggestion) {
@@ -79,6 +174,22 @@ export default function AddSetScreen() {
     setWeight(String(progressionSuggestion.weight));
     setReps(String(progressionSuggestion.reps));
   }
+
+  function applyMetricProgressionSuggestion() {
+    if (!metricProgressionSuggestion) return;
+
+    if (metricProgressionSuggestion.performanceType === "time") {
+      setDurationSeconds(
+        String(metricProgressionSuggestion.durationSeconds ?? ""),
+      );
+    } else {
+      setMetricValue(String(metricProgressionSuggestion.metricValue ?? ""));
+      if (metricProgressionSuggestion.metricUnit) {
+        setMetricUnit(metricProgressionSuggestion.metricUnit);
+      }
+    }
+  }
+
    useEffect(() => {
     if (!exerciseId && exercises.length > 0) {
       setExerciseId(exercises[0].id);
@@ -91,8 +202,17 @@ export default function AddSetScreen() {
       return;
     }
 
+    if (setVariant === "drop" && !parentSetId) {
+      setErrorMessage(
+        "Start a drop set from an existing working set so it stays linked.",
+      );
+      return;
+    }
+
     const parsedWeight = Number(weight);
     const parsedReps = Number(reps);
+    const parsedDurationSeconds = Number(durationSeconds);
+    const parsedMetricValue = Number(metricValue);
     const parsedRir = rir.trim() === "" ? null : Number(rir);
 
     if (!Number.isFinite(parsedWeight) || parsedWeight < 0) {
@@ -101,12 +221,42 @@ export default function AddSetScreen() {
     }
 
     if (
-      !Number.isInteger(parsedReps) ||
-      parsedReps <= 0
+      performanceType === "reps" &&
+      (!Number.isInteger(parsedReps) || parsedReps <= 0)
     ) {
       setErrorMessage("Reps must be a positive whole number.");
       return;
     }
+
+    if (
+      performanceType === "time" &&
+      (!Number.isInteger(parsedDurationSeconds) ||
+        parsedDurationSeconds <= 0)
+    ) {
+      setErrorMessage("Duration must be a positive whole number of seconds.");
+      return;
+    }
+
+    if (
+      ["distance", "calories", "rounds"].includes(performanceType) &&
+      (!Number.isFinite(parsedMetricValue) || parsedMetricValue <= 0)
+    ) {
+      setErrorMessage("Metric value must be greater than zero.");
+      return;
+    }
+
+    const savedMetricValue =
+      ["distance", "calories", "rounds"].includes(performanceType)
+        ? parsedMetricValue
+        : null;
+    const savedMetricUnit =
+      performanceType === "distance"
+        ? metricUnit
+        : defaultMetricUnit(performanceType);
+
+    const savedReps = performanceType === "reps" ? parsedReps : 1;
+    const savedDuration =
+      performanceType === "time" ? parsedDurationSeconds : null;
 
     if (
       parsedRir !== null &&
@@ -141,9 +291,16 @@ export default function AddSetScreen() {
       const { data, error } = await supabase
         .from("workout_sets")
         .update({
+          duration_seconds: savedDuration,
+          metric_unit: savedMetricUnit,
+          metric_value: savedMetricValue,
           exercise_id: exerciseId,
-          reps: parsedReps,
+          parent_set_id: setVariant === "drop" ? parentSetId : null,
+          performance_type: performanceType,
+          reps: savedReps,
           reps_in_reserve: parsedRir,
+          set_type: setType,
+          set_variant: setVariant,
           weight: parsedWeight,
           weight_unit: profile?.preferred_weight_unit ?? "lb",
         })
@@ -189,11 +346,18 @@ export default function AddSetScreen() {
     const { error } = await supabase
       .from("workout_sets")
       .insert({
+        duration_seconds: savedDuration,
+        metric_unit: savedMetricUnit,
+        metric_value: savedMetricValue,
         exercise_id: exerciseId,
-        reps: parsedReps,
+        parent_set_id: setVariant === "drop" ? parentSetId : null,
+        performance_type: performanceType,
+        reps: savedReps,
         reps_in_reserve: parsedRir,
         session_id: workoutId,
         set_number: nextSetNumber,
+        set_type: setType,
+        set_variant: setVariant,
         user_id: session.user.id,
         weight: parsedWeight,
         weight_unit: profile?.preferred_weight_unit ?? "lb",
@@ -257,6 +421,59 @@ export default function AddSetScreen() {
           onSelect={setExerciseId}
           selectedExerciseId={exerciseId}
         />
+        {setVariant === "drop" ? (
+          <View style={styles.dropSetBanner}>
+            <Text style={styles.dropSetEyebrow}>DROP SET</Text>
+            <Text style={styles.dropSetText}>
+              This set is linked to the working set you selected.
+            </Text>
+          </View>
+        ) : null}
+
+        <Text style={styles.label}>Performance</Text>
+        <View style={styles.setTypeOptions}>
+          {PERFORMANCE_TYPES.map((option) => (
+            <Pressable
+              key={option}
+              onPress={() => setPerformanceType(option)}
+              style={[
+                styles.setTypeButton,
+                performanceType === option && styles.setTypeButtonSelected,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.setTypeText,
+                  performanceType === option && styles.setTypeTextSelected,
+                ]}
+              >
+                {PERFORMANCE_LABELS[option]}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        <Text style={styles.label}>Set type</Text>
+        <View style={styles.setTypeOptions}>
+          {(["warmup", "working"] as const).map((option) => (
+            <Pressable
+              key={option}
+              onPress={() => setSetType(option)}
+              style={[
+                styles.setTypeButton,
+                setType === option && styles.setTypeButtonSelected,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.setTypeText,
+                  setType === option && styles.setTypeTextSelected,
+                ]}
+              >
+                {option === "warmup" ? "Warm-up" : "Working"}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
                   <View style={styles.previousCard}>
             <Text style={styles.previousEyebrow}>PREVIOUS SET</Text>
 
@@ -285,9 +502,15 @@ export default function AddSetScreen() {
               </Text>
             )}
           </View>
-                  {!isEditing && progressionSuggestion ? (
+                  {!isEditing && performanceType === "reps" && progressionSuggestion ? (
             <View style={styles.suggestionCard}>
-              <Text style={styles.suggestionEyebrow}>NEXT TARGET</Text>
+              <Text style={styles.suggestionEyebrow}>
+                {progressionSuggestion.strategy === "deload"
+                  ? "RECOVERY TARGET"
+                  : progressionSuggestion.recoveryContext === "repeated_low"
+                    ? "RECOVERY-AWARE TARGET"
+                    : "NEXT TARGET"}
+              </Text>
               <Text style={styles.suggestionPerformance}>
                 {progressionSuggestion.weight}{" "}
                 {progressionSuggestion.weightUnit} ×{" "}
@@ -299,6 +522,29 @@ export default function AddSetScreen() {
 
               <Pressable
                 onPress={applyProgressionSuggestion}
+                style={styles.useTargetButton}
+              >
+                <Text style={styles.useTargetText}>Use target</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          {!isEditing && performanceType !== "reps" && metricProgressionSuggestion ? (
+            <View style={styles.suggestionCard}>
+              <Text style={styles.suggestionEyebrow}>
+                {metricProgressionSuggestion.recoveryContext === "repeated_low"
+                  ? "RECOVERY-AWARE TARGET"
+                  : "NEXT TARGET"}
+              </Text>
+              <Text style={styles.suggestionPerformance}>
+                {metricProgressionSuggestion.performanceType === "time"
+                  ? `${metricProgressionSuggestion.durationSeconds} seconds`
+                  : `${metricProgressionSuggestion.metricValue} ${metricProgressionSuggestion.metricUnit ?? metricProgressionSuggestion.performanceType}`}
+              </Text>
+              <Text style={styles.suggestionExplanation}>
+                {metricProgressionSuggestion.explanation}
+              </Text>
+              <Pressable
+                onPress={applyMetricProgressionSuggestion}
                 style={styles.useTargetButton}
               >
                 <Text style={styles.useTargetText}>Use target</Text>
@@ -317,15 +563,74 @@ export default function AddSetScreen() {
           value={weight}
         />
 
-        <Text style={styles.label}>Reps</Text>
-        <TextInput
-          keyboardType="number-pad"
-          onChangeText={setReps}
-          placeholder="8"
-          placeholderTextColor="#727885"
-          style={styles.input}
-          value={reps}
-        />
+        {performanceType === "reps" ? (
+          <>
+            <Text style={styles.label}>Reps</Text>
+            <TextInput
+              keyboardType="number-pad"
+              onChangeText={setReps}
+              placeholder="8"
+              placeholderTextColor="#727885"
+              style={styles.input}
+              value={reps}
+            />
+          </>
+        ) : performanceType === "time" ? (
+          <>
+            <Text style={styles.label}>Duration (seconds)</Text>
+            <TextInput
+              keyboardType="number-pad"
+              onChangeText={setDurationSeconds}
+              placeholder="30"
+              placeholderTextColor="#727885"
+              style={styles.input}
+              value={durationSeconds}
+            />
+          </>
+        ) : null}
+
+        {["distance", "calories", "rounds"].includes(performanceType) ? (
+          <>
+            <Text style={styles.label}>
+              {performanceType === "distance"
+                ? "Distance"
+                : performanceType === "calories"
+                  ? "Calories"
+                  : "Rounds"}
+            </Text>
+            <TextInput
+              keyboardType="decimal-pad"
+              onChangeText={setMetricValue}
+              placeholder={performanceType === "distance" ? "500" : "5"}
+              placeholderTextColor="#727885"
+              style={styles.input}
+              value={metricValue}
+            />
+            {performanceType === "distance" ? (
+              <View style={styles.setTypeOptions}>
+                {DISTANCE_UNITS.map((unit) => (
+                  <Pressable
+                    key={unit}
+                    onPress={() => setMetricUnit(unit)}
+                    style={[
+                      styles.setTypeButton,
+                      metricUnit === unit && styles.setTypeButtonSelected,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.setTypeText,
+                        metricUnit === unit && styles.setTypeTextSelected,
+                      ]}
+                    >
+                      {unit}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+          </>
+        ) : null}
 
         <Text style={styles.label}>Reps in reserve</Text>
         <TextInput
@@ -408,6 +713,52 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
     marginBottom: 8,
+  },
+  dropSetBanner: {
+    backgroundColor: "#24143B",
+    borderColor: "#A78BFA",
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 20,
+    padding: 14,
+  },
+  dropSetEyebrow: {
+    color: "#A78BFA",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1.5,
+  },
+  dropSetText: {
+    color: "#D1D5DB",
+    fontSize: 13,
+    marginTop: 5,
+  },
+  setTypeOptions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginBottom: 20,
+  },
+  setTypeButton: {
+    alignItems: "center",
+    borderColor: "#333333",
+    borderRadius: 10,
+    borderWidth: 1,
+    flex: 1,
+    minWidth: 90,
+    paddingVertical: 12,
+  },
+  setTypeButtonSelected: {
+    backgroundColor: "#F97316",
+    borderColor: "#F97316",
+  },
+  setTypeText: {
+    color: "#D1D5DB",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  setTypeTextSelected: {
+    color: "#0B0B0B",
   },
   previousCard: {
     backgroundColor: "#171717",

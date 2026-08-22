@@ -26,16 +26,33 @@ export function AuthProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     let isMounted = true;
 
-    void supabase.auth.getSession().then(({ data, error }) => {
-      if (!isMounted) return;
+    async function restoreSession() {
+      try {
+        const { data, error } = await supabase.auth.getSession();
 
-      if (error) {
-        console.error('Unable to restore Supabase session:', error.message);
+        if (!isMounted) return;
+
+        if (error) {
+          console.error('Unable to restore Supabase session:', error.message);
+        }
+
+        setSession(data.session);
+      } catch (error) {
+        if (isMounted) {
+          console.error(
+            'Unable to restore Supabase session:',
+            error instanceof Error ? error.message : 'Unknown error',
+          );
+          setSession(null);
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoading(false);
+        }
       }
+    }
 
-      setSession(data.session);
-      setIsLoading(false);
-    });
+    void restoreSession();
 
     const {
       data: { subscription },

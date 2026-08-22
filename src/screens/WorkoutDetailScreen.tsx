@@ -18,7 +18,19 @@ import {
   type PlannedExercise,
   useWorkoutSession,
 } from "../hooks/useWorkoutSession";
+import {
+  type WorkoutRecommendation,
+  useWorkoutRecommendations,
+} from "../hooks/useWorkoutRecommendations";
 
+import {
+  formatExerciseTarget,
+  formatSetPerformance,
+  getNextWorkoutSet,
+  groupWorkoutSets,
+} from "../lib/workoutSets";
+import { getSetTargetFeedback } from "../lib/performanceFeedback";
+import { buildWorkoutRecap } from "../lib/workoutRecap";
 import { supabase } from "../lib/supabase";
 import { useAuth } from "../providers/AuthProvider";
 import { useState } from "react";
@@ -26,26 +38,73 @@ import { useState } from "react";
 type SetCardProps = {
   canModify: boolean;
   onDelete: (set: LoggedSet) => void;
+  onDropSet: (set: LoggedSet) => void;
   onEdit: (set: LoggedSet) => void;
+  recommendation: WorkoutRecommendation | null;
   set: LoggedSet;
 };
 
 function SetCard({
   canModify,
   onDelete,
+  onDropSet,
   onEdit,
+  recommendation,
   set,
 }: SetCardProps) {
+  const feedback =
+    recommendation &&
+    set.set_type === "working" &&
+    set.set_variant === "standard"
+      ? getSetTargetFeedback({
+          actualDurationSeconds: set.duration_seconds,
+          actualMetricValue: set.metric_value ?? null,
+          actualReps: set.reps,
+          actualWeight: set.weight,
+          performanceType: recommendation.performanceType,
+          targetDurationSeconds: recommendation.durationSeconds,
+          targetMetricValue: recommendation.metricValue,
+          targetReps: recommendation.reps,
+          targetWeight: recommendation.weight,
+        })
+      : null;
   return (
     <View style={styles.setCard}>
       <View style={styles.setHeader}>
         <Text style={styles.exerciseName}>{set.exercise_name}</Text>
-        <Text style={styles.setNumber}>SET {set.set_number}</Text>
+        <View style={styles.setLabels}>
+          <Text
+            style={[
+              styles.setTypeBadge,
+              set.set_type === "warmup" && styles.warmupBadge,
+            ]}
+          >
+            {set.set_variant === "drop"
+              ? "DROP SET"
+              : set.set_type === "warmup"
+                ? "WARM-UP"
+                : "WORKING"}
+          </Text>
+          <Text style={styles.setNumber}>SET {set.set_number}</Text>
+        </View>
       </View>
 
       <Text style={styles.performance}>
-        {set.weight} {set.weight_unit} × {set.reps} reps
+{formatSetPerformance(set)}
       </Text>
+
+      {feedback ? (
+        <View
+          style={[
+            styles.feedbackCard,
+            feedback.status === "exceeded" && styles.feedbackExceeded,
+            feedback.status === "missed" && styles.feedbackMissed,
+          ]}
+        >
+          <Text style={styles.feedbackLabel}>{feedback.label}</Text>
+          <Text style={styles.feedbackText}>{feedback.explanation}</Text>
+        </View>
+      ) : null}
 
       {set.reps_in_reserve !== null ? (
         <Text style={styles.rir}>
@@ -55,6 +114,16 @@ function SetCard({
 
       {canModify ? (
         <View style={styles.setActions}>
+          {set.set_type === "working" &&
+          set.set_variant === "standard" ? (
+            <Pressable
+              onPress={() => onDropSet(set)}
+              style={styles.dropSetButton}
+            >
+              <Text style={styles.dropSetButtonText}>Add drop set</Text>
+            </Pressable>
+          ) : null}
+
           <Pressable
             onPress={() => onEdit(set)}
             style={styles.editSetButton}
@@ -77,7 +146,11 @@ type PlannedExerciseCardProps = {
   canLog: boolean;
   completedSets: number;
   exercise: PlannedExercise;
-  onLog: (exercise: PlannedExercise) => void;
+  onLog: (
+    exercise: PlannedExercise,
+    recommendation: WorkoutRecommendation | null,
+  ) => void;
+  recommendation: WorkoutRecommendation | null;
 };
 
 function PlannedExerciseCard({
@@ -85,6 +158,7 @@ function PlannedExerciseCard({
   completedSets,
   exercise,
   onLog,
+  recommendation,
 }: PlannedExerciseCardProps) {
   const targetReached = completedSets >= exercise.target_sets;
 
@@ -98,9 +172,24 @@ function PlannedExerciseCard({
       </View>
 
       <Text style={styles.planTarget}>
-        {exercise.target_sets} sets × {exercise.rep_min}–
-        {exercise.rep_max} reps • {exercise.target_rir} RIR
+{formatExerciseTarget(exercise)}
       </Text>
+
+      {recommendation ? (
+        <View style={styles.planRecommendation}>
+          <Text style={styles.planRecommendationLabel}>
+            {recommendation.strategy === "hold"
+              ? "RECOVERY-AWARE TARGET"
+              : "TODAY'S TARGET"}
+          </Text>
+          <Text style={styles.planRecommendationTarget}>
+            {recommendation.targetText}
+          </Text>
+          <Text style={styles.planRecommendationExplanation}>
+            {recommendation.explanation}
+          </Text>
+        </View>
+      ) : null}
 
       <Text style={styles.planProgress}>
         {completedSets} of {exercise.target_sets} sets logged
@@ -108,10 +197,12 @@ function PlannedExerciseCard({
 
       {canLog && !targetReached ? (
         <Pressable
-          onPress={() => onLog(exercise)}
+          onPress={() => onLog(exercise, recommendation)}
           style={styles.planLogButton}
         >
-          <Text style={styles.planLogText}>Log next set</Text>
+          <Text style={styles.planLogText}>
+            {recommendation ? "Log recommended set" : "Log next set"}
+          </Text>
         </Pressable>
       ) : targetReached ? (
         <Text style={styles.planComplete}>TARGET COMPLETE</Text>
@@ -134,16 +225,147 @@ export default function WorkoutDetailScreen() {
     sets,
     workout,
   } = useWorkoutSession(workoutId);
-  function handleLogPlannedExercise(exercise: PlannedExercise) {
+  const nextWorkoutSet = getNextWorkoutSet(sets, plannedExercises);
+  const { recommendations } = useWorkoutRecommendations(
+    plannedExercises,
+    workoutId,
+  );
+  const workoutRecap = buildWorkoutRecap(sets, recommendations);
+
+  function handleLogNextSet() {
+    if (!nextWorkoutSet) {
+      return;
+    }
+
+    const { exercise, lastSet } = nextWorkoutSet;
+
     router.push({
       pathname: "/workout/[id]/add-set",
       params: {
+        durationSeconds: String(
+          lastSet?.duration_seconds ??
+            exercise.target_duration_seconds ??
+            "",
+        ),
         exerciseId: exercise.exercise_id,
         id: workoutId,
-         repMax: String(exercise.rep_max),
-         repMin: String(exercise.rep_min),
-         reps: String(exercise.rep_min),
+        metricUnit:
+          lastSet?.metric_unit ?? exercise.target_metric_unit ?? undefined,
+        metricValue: String(
+          lastSet?.metric_value ?? exercise.target_metric_value ?? "",
+        ),
+        performanceType:
+          lastSet?.performance_type ?? exercise.performance_type,
+        repMax: String(exercise.rep_max),
+        repMin: String(exercise.rep_min),
+        reps: String(lastSet?.reps ?? exercise.rep_min),
+        rir: String(
+          lastSet?.reps_in_reserve ?? exercise.target_rir,
+        ),
+        ...(lastSet ? { weight: String(lastSet.weight) } : {}),
+      },
+    });
+  }
+
+  function handleAddDropSet(set: LoggedSet) {
+    const reducedWeight = Number((set.weight * 0.8).toFixed(2));
+
+    router.push({
+      pathname: "/workout/[id]/add-set",
+      params: {
+        durationSeconds:
+          set.duration_seconds === null
+            ? ""
+            : String(set.duration_seconds),
+        exerciseId: set.exercise_id,
+        id: workoutId,
+        parentSetId: set.id,
+        metricUnit: set.metric_unit ?? undefined,
+        metricValue: set.metric_value === null ? "" : String(set.metric_value),
+        performanceType: set.performance_type,
+        reps: String(set.reps),
+        rir: "",
+        setType: "working",
+        setVariant: "drop",
+        weight: String(reducedWeight),
+      },
+    });
+  }
+
+  function handleLogAnotherSet(set: LoggedSet) {
+    const plannedExercise = plannedExercises.find(
+      (exercise) => exercise.exercise_id === set.exercise_id,
+    );
+
+    router.push({
+      pathname: "/workout/[id]/add-set",
+      params: {
+        durationSeconds:
+          set.duration_seconds === null
+            ? ""
+            : String(set.duration_seconds),
+        exerciseId: set.exercise_id,
+        id: workoutId,
+        metricUnit: set.metric_unit ?? undefined,
+        metricValue: set.metric_value === null ? "" : String(set.metric_value),
+        performanceType: set.performance_type,
+        reps: String(set.reps),
+        rir:
+          set.reps_in_reserve === null
+            ? ""
+            : String(set.reps_in_reserve),
+        setType: set.set_type,
+        setVariant: set.set_variant,
+        ...(set.parent_set_id
+          ? { parentSetId: set.parent_set_id }
+          : {}),
+        weight: String(set.weight),
+        ...(plannedExercise
+          ? {
+              repMax: String(plannedExercise.rep_max),
+              repMin: String(plannedExercise.rep_min),
+            }
+          : {}),
+      },
+    });
+  }
+
+  function handleLogPlannedExercise(
+    exercise: PlannedExercise,
+    recommendation: WorkoutRecommendation | null,
+  ) {
+    router.push({
+      pathname: "/workout/[id]/add-set",
+      params: {
+        durationSeconds:
+          recommendation?.durationSeconds !== null &&
+          recommendation?.durationSeconds !== undefined
+            ? String(recommendation.durationSeconds)
+            : exercise.target_duration_seconds === null
+              ? ""
+              : String(exercise.target_duration_seconds),
+        exerciseId: exercise.exercise_id,
+        id: workoutId,
+        metricUnit:
+          recommendation?.metricUnit ??
+          exercise.target_metric_unit ??
+          undefined,
+        metricValue:
+          recommendation?.metricValue !== null &&
+          recommendation?.metricValue !== undefined
+            ? String(recommendation.metricValue)
+            : exercise.target_metric_value === null
+              ? ""
+              : String(exercise.target_metric_value),
+        performanceType: exercise.performance_type,
+        repMax: String(exercise.rep_max),
+        repMin: String(exercise.rep_min),
+        reps: String(recommendation?.reps ?? exercise.rep_min),
         rir: String(exercise.target_rir),
+        ...(recommendation?.weight !== null &&
+        recommendation?.weight !== undefined
+          ? { weight: String(recommendation.weight) }
+          : {}),
       },
     });
   }
@@ -152,19 +374,32 @@ export default function WorkoutDetailScreen() {
     router.push({
       pathname: "/workout/[id]/add-set",
       params: {
+        durationSeconds:
+          set.duration_seconds === null
+            ? ""
+            : String(set.duration_seconds),
         exerciseId: set.exercise_id,
         id: workoutId,
+        metricUnit: set.metric_unit ?? undefined,
+        metricValue: set.metric_value === null ? "" : String(set.metric_value),
+        performanceType: set.performance_type,
         reps: String(set.reps),
         rir:
           set.reps_in_reserve === null
             ? ""
             : String(set.reps_in_reserve),
         setId: set.id,
+        setType: set.set_type,
+        setVariant: set.set_variant,
+        ...(set.parent_set_id
+          ? { parentSetId: set.parent_set_id }
+          : {}),
         weight: String(set.weight),
       },
     });
   }
     function handleCompleteWorkout() {
+
     if (!session?.user.id || !workoutId) {
       Alert.alert("Unable to complete workout", "Your session is missing.");
       return;
@@ -205,7 +440,7 @@ export default function WorkoutDetailScreen() {
               return;
             }
 
-            router.replace("/training");
+            await refreshWorkout();
           },
         },
       ],
@@ -222,7 +457,7 @@ export default function WorkoutDetailScreen() {
 
     Alert.alert(
       "Delete set?",
-      `${set.exercise_name}: ${set.weight} ${set.weight_unit} × ${set.reps}`,
+      `${set.exercise_name}: ${formatSetPerformance(set)}`,
       [
         {
           style: "cancel",
@@ -279,18 +514,50 @@ if (isLoading) {
     <SafeAreaView style={styles.screen}>
       <FlatList
         contentContainerStyle={styles.listContent}
-        data={sets}
-        keyExtractor={(set) => set.id}
+        data={groupWorkoutSets(
+          sets,
+          plannedExercises.map((exercise) => exercise.exercise_id),
+        )}
+        keyExtractor={(group) => group.exerciseId}
         onRefresh={() => void refreshWorkout()}
         refreshing={isLoading}
-                  renderItem={({ item }) => (
-            <SetCard
-              canModify={!workout.completed_at}
-              onDelete={handleDeleteSet}
-              onEdit={handleEditSet}
-              set={item}
-            />
-          )}
+        renderItem={({ item: group }) => (
+          <View style={styles.exerciseGroup}>
+            <Text style={styles.groupExerciseName}>
+              {group.exerciseName}
+            </Text>
+            <Text style={styles.groupSetCount}>
+              {group.sets.length} {group.sets.length === 1 ? "set" : "sets"}
+            </Text>
+            {group.sets.map((set) => (
+              <SetCard
+                canModify={!workout.completed_at}
+                key={set.id}
+                onDelete={handleDeleteSet}
+                onDropSet={handleAddDropSet}
+                onEdit={handleEditSet}
+                recommendation={
+                  recommendations[set.exercise_id] ?? null
+                }
+                set={set}
+              />
+            ))}
+            {!workout.completed_at ? (
+              <Pressable
+                onPress={() =>
+                  handleLogAnotherSet(
+                    group.sets[group.sets.length - 1],
+                  )
+                }
+                style={styles.groupNextSetButton}
+              >
+                <Text style={styles.groupNextSetText}>
+                  Log next set
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+        )}
         ListHeaderComponent={
           <View>
             <Pressable
@@ -317,6 +584,75 @@ if (isLoading) {
               <Text style={styles.summaryNumber}>{sets.length}</Text>
               <Text style={styles.summaryLabel}>logged sets</Text>
             </View>
+
+            {workout.completed_at ? (
+              <View style={styles.recapCard}>
+                <Text style={styles.recapEyebrow}>WORKOUT COMPLETE</Text>
+                <Text style={styles.recapTitle}>Strong work. Here’s the recap.</Text>
+                <View style={styles.recapStats}>
+                  <View style={styles.recapStat}>
+                    <Text style={styles.recapNumber}>
+                      {workoutRecap.workingSets}
+                    </Text>
+                    <Text style={styles.recapStatLabel}>working sets</Text>
+                  </View>
+                  <View style={styles.recapStat}>
+                    <Text style={styles.recapNumber}>
+                      {workoutRecap.exercisesTrained}
+                    </Text>
+                    <Text style={styles.recapStatLabel}>exercises</Text>
+                  </View>
+                </View>
+                {workoutRecap.evaluatedSets > 0 ? (
+                  <View style={styles.recapResults}>
+                    <Text style={styles.recapResult}>
+                      {workoutRecap.exceeded} exceeded
+                    </Text>
+                    <Text style={styles.recapResult}>
+                      {workoutRecap.met} met
+                    </Text>
+                    <Text style={styles.recapResult}>
+                      {workoutRecap.missed} below
+                    </Text>
+                  </View>
+                ) : null}
+                <Text style={styles.recapDirection}>
+                  {workoutRecap.nextDirection}
+                </Text>
+                <Pressable
+                  onPress={() => router.replace("/training")}
+                  style={styles.recapDoneButton}
+                >
+                  <Text style={styles.recapDoneText}>Done</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            {!workout.completed_at && nextWorkoutSet ? (
+              <View style={styles.nextSetCard}>
+                <Text style={styles.nextSetEyebrow}>UP NEXT</Text>
+                <Text style={styles.nextSetTitle}>
+                  {nextWorkoutSet.exercise.exercise_name}
+                </Text>
+                <Text style={styles.nextSetProgress}>
+                  Set {nextWorkoutSet.setNumber} of{" "}
+                  {nextWorkoutSet.exercise.target_sets}
+                </Text>
+                <Text style={styles.nextSetTarget}>
+                  {nextWorkoutSet.lastSet
+                    ? `${formatSetPerformance(nextWorkoutSet.lastSet)} prefilled`
+                    : formatExerciseTarget(nextWorkoutSet.exercise)}
+                </Text>
+                <Pressable
+                  onPress={handleLogNextSet}
+                  style={styles.nextSetButton}
+                >
+                  <Text style={styles.nextSetButtonText}>
+                    Log next set
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
               {plannedExercises.length > 0 ? (
                 <View style={styles.planList}>
                   <Text style={styles.sectionTitle}>Workout plan</Text>
@@ -333,6 +669,9 @@ if (isLoading) {
                       exercise={exercise}
                       key={exercise.id}
                       onLog={handleLogPlannedExercise}
+                      recommendation={
+                        recommendations[exercise.exercise_id] ?? null
+                      }
                     />
                   ))}
                 </View>
@@ -430,6 +769,80 @@ const styles = StyleSheet.create({
     marginBottom: 22,
     marginTop: 8,
   },
+  recapCard: {
+    backgroundColor: "#15120F",
+    borderColor: "#F97316",
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 24,
+    padding: 18,
+  },
+  recapEyebrow: {
+    color: "#F97316",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1.5,
+  },
+  recapTitle: {
+    color: "#FFFFFF",
+    fontSize: 21,
+    fontWeight: "800",
+    marginTop: 7,
+  },
+  recapStats: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 16,
+  },
+  recapStat: {
+    backgroundColor: "#171717",
+    borderRadius: 10,
+    flex: 1,
+    padding: 12,
+  },
+  recapNumber: {
+    color: "#F97316",
+    fontSize: 24,
+    fontWeight: "800",
+  },
+  recapStatLabel: {
+    color: "#9CA3AF",
+    fontSize: 12,
+    marginTop: 2,
+  },
+  recapResults: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 12,
+  },
+  recapResult: {
+    backgroundColor: "#21170D",
+    borderRadius: 999,
+    color: "#D1D5DB",
+    fontSize: 12,
+    fontWeight: "700",
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  recapDirection: {
+    color: "#D1D5DB",
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 15,
+  },
+  recapDoneButton: {
+    alignItems: "center",
+    backgroundColor: "#F97316",
+    borderRadius: 10,
+    marginTop: 16,
+    paddingVertical: 12,
+  },
+  recapDoneText: {
+    color: "#0B0B0B",
+    fontSize: 15,
+    fontWeight: "800",
+  },
   summary: {
     alignItems: "baseline",
     backgroundColor: "#1A1A1A",
@@ -450,7 +863,50 @@ const styles = StyleSheet.create({
     color: "#D1D5DB",
     fontSize: 15,
   },
-    planList: {
+    nextSetCard: {
+    backgroundColor: "#21170D",
+    borderColor: "#F97316",
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 24,
+    padding: 18,
+  },
+  nextSetEyebrow: {
+    color: "#F97316",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1.5,
+  },
+  nextSetTitle: {
+    color: "#FFFFFF",
+    fontSize: 22,
+    fontWeight: "800",
+    marginTop: 6,
+  },
+  nextSetProgress: {
+    color: "#F97316",
+    fontSize: 14,
+    fontWeight: "700",
+    marginTop: 5,
+  },
+  nextSetTarget: {
+    color: "#D1D5DB",
+    fontSize: 13,
+    marginTop: 6,
+  },
+  nextSetButton: {
+    alignItems: "center",
+    backgroundColor: "#F97316",
+    borderRadius: 10,
+    marginTop: 16,
+    paddingVertical: 12,
+  },
+  nextSetButtonText: {
+    color: "#0B0B0B",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  planList: {
     marginBottom: 18,
   },
     planCard: {
@@ -478,12 +934,45 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "700",
   },
+  planSuperset: {
+    color: "#A78BFA",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 1.5,
+    marginTop: 8,
+  },
   planTarget: {
     color: "#D1D5DB",
     fontSize: 13,
     marginTop: 8,
   },
-    planProgress: {
+    planRecommendation: {
+    backgroundColor: "#171717",
+    borderColor: "#F97316",
+    borderRadius: 10,
+    borderWidth: 1,
+    marginTop: 10,
+    padding: 11,
+  },
+  planRecommendationLabel: {
+    color: "#F97316",
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 1.2,
+  },
+  planRecommendationTarget: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "800",
+    marginTop: 5,
+  },
+  planRecommendationExplanation: {
+    color: "#9CA3AF",
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 5,
+  },
+  planProgress: {
     color: "#9CA3AF",
     fontSize: 13,
     marginTop: 6,
@@ -514,6 +1003,38 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     marginBottom: 14,
   },
+  exerciseGroup: {
+    backgroundColor: "#121212",
+    borderColor: "#292929",
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 14,
+    padding: 12,
+  },
+  groupExerciseName: {
+    color: "#FFFFFF",
+    fontSize: 18,
+    fontWeight: "800",
+  },
+  groupSetCount: {
+    color: "#9CA3AF",
+    fontSize: 12,
+    marginBottom: 12,
+    marginTop: 3,
+  },
+  groupNextSetButton: {
+    alignItems: "center",
+    borderColor: "#F97316",
+    borderRadius: 10,
+    borderWidth: 1,
+    marginTop: 2,
+    paddingVertical: 11,
+  },
+  groupNextSetText: {
+    color: "#F97316",
+    fontSize: 14,
+    fontWeight: "800",
+  },
   setCard: {
     backgroundColor: "#171717",
     borderColor: "#292929",
@@ -533,6 +1054,19 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: "700",
   },
+  setLabels: {
+    alignItems: "flex-end",
+    gap: 4,
+  },
+  setTypeBadge: {
+    color: "#34D399",
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 1,
+  },
+  warmupBadge: {
+    color: "#FBBF24",
+  },
   setNumber: {
     color: "#F97316",
     fontSize: 10,
@@ -544,6 +1078,34 @@ const styles = StyleSheet.create({
     fontSize: 16,
     marginTop: 10,
   },
+  feedbackCard: {
+    backgroundColor: "#10231B",
+    borderColor: "#34D399",
+    borderRadius: 9,
+    borderWidth: 1,
+    marginTop: 10,
+    padding: 10,
+  },
+  feedbackExceeded: {
+    backgroundColor: "#21170D",
+    borderColor: "#F97316",
+  },
+  feedbackMissed: {
+    backgroundColor: "#211414",
+    borderColor: "#F87171",
+  },
+  feedbackLabel: {
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1,
+  },
+  feedbackText: {
+    color: "#D1D5DB",
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 4,
+  },
   rir: {
     color: "#9CA3AF",
     fontSize: 13,
@@ -553,6 +1115,18 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 10,
     marginTop: 14,
+  },
+  dropSetButton: {
+    borderColor: "#A78BFA",
+    borderRadius: 8,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  dropSetButtonText: {
+    color: "#A78BFA",
+    fontSize: 13,
+    fontWeight: "700",
   },
   editSetButton: {
     borderColor: "#F97316",

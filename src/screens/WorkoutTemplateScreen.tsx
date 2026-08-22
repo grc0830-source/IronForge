@@ -14,6 +14,7 @@ import {
   type TemplateExercise,
   useWorkoutTemplate,
 } from "../hooks/useWorkoutTemplate";
+import { formatExerciseTarget } from "../lib/workoutSets";
 import { supabase } from "../lib/supabase";
 import { useAuth } from "../providers/AuthProvider";
 type TemplateExerciseCardProps = {
@@ -23,6 +24,8 @@ type TemplateExerciseCardProps = {
   isMoving: boolean;
   onDelete: (exercise: TemplateExercise) => void;
   onEdit: (exercise: TemplateExercise) => void;
+  onToggleSuperset: (exercise: TemplateExercise) => void;
+  previousExercise: TemplateExercise | null;
   onMove: (
     exercise: TemplateExercise,
     direction: "up" | "down",
@@ -37,6 +40,8 @@ function TemplateExerciseCard({
   onDelete,
   onEdit,
   onMove,
+  onToggleSuperset,
+  previousExercise,
 }: TemplateExerciseCardProps) {
   return (
     <View style={styles.card}>
@@ -48,10 +53,26 @@ function TemplateExerciseCard({
       </View>
 
       <Text style={styles.target}>
-        {exercise.target_sets} sets × {exercise.rep_min}–
-        {exercise.rep_max} reps
+{formatExerciseTarget(exercise)}
       </Text>
       <Text style={styles.rir}>{exercise.target_rir} target RIR</Text>
+      {exercise.superset_group ? (
+        <Text style={styles.supersetBadge}>SUPERSET</Text>
+      ) : null}
+
+      {previousExercise ? (
+        <Pressable
+          onPress={() => onToggleSuperset(exercise)}
+          style={styles.supersetButton}
+        >
+          <Text style={styles.supersetButtonText}>
+            {exercise.superset_group &&
+            exercise.superset_group === previousExercise.superset_group
+              ? "Remove superset"
+              : `Superset with ${previousExercise.exercise_name}`}
+          </Text>
+        </Pressable>
+      ) : null}
 
       <View style={styles.moveActions}>
         <Pressable
@@ -126,14 +147,60 @@ export default function WorkoutTemplateScreen() {
       },
     });
   }
+ async function handleToggleSuperset(exercise: TemplateExercise) {
+    if (!session?.user.id || !templateId) {
+      return;
+    }
+
+    const exerciseIndex = templateExercises.findIndex(
+      (item) => item.id === exercise.id,
+    );
+    const previousExercise = templateExercises[exerciseIndex - 1];
+
+    if (!previousExercise) {
+      return;
+    }
+
+    const isRemoving =
+      exercise.superset_group !== null &&
+      exercise.superset_group === previousExercise.superset_group;
+    const supersetGroup = isRemoving
+      ? null
+      : [previousExercise.id, exercise.id].sort().join(":");
+
+    const { error } = await supabase
+      .from("workout_template_exercises")
+      .update({ superset_group: supersetGroup })
+      .in("id", [previousExercise.id, exercise.id])
+      .eq("template_id", templateId)
+      .eq("user_id", session.user.id);
+
+    if (error) {
+      Alert.alert("Unable to update superset", error.message);
+      return;
+    }
+
+    await refreshTemplate();
+  }
+
  function handleEditExercise(exercise: TemplateExercise) {
     router.push({
       pathname: "/template/[id]/add-exercise",
       params: {
         exerciseId: exercise.exercise_id,
         id: templateId,
+        performanceType: exercise.performance_type,
         repMax: String(exercise.rep_max),
         repMin: String(exercise.rep_min),
+        targetDurationSeconds:
+          exercise.target_duration_seconds === null
+            ? ""
+            : String(exercise.target_duration_seconds),
+        targetMetricUnit: exercise.target_metric_unit ?? undefined,
+        targetMetricValue:
+          exercise.target_metric_value === null
+            ? ""
+            : String(exercise.target_metric_value),
         targetRir: String(exercise.target_rir),
         targetSets: String(exercise.target_sets),
         templateExerciseId: exercise.id,
@@ -220,10 +287,15 @@ export default function WorkoutTemplateScreen() {
 
             const snapshots = templateExercises.map((exercise) => ({
               exercise_id: exercise.exercise_id,
+              performance_type: exercise.performance_type,
               position: exercise.position,
               rep_max: exercise.rep_max,
               rep_min: exercise.rep_min,
               session_id: workout.id,
+              superset_group: exercise.superset_group,
+              target_duration_seconds: exercise.target_duration_seconds,
+              target_metric_unit: exercise.target_metric_unit,
+              target_metric_value: exercise.target_metric_value,
               target_rir: exercise.target_rir,
               target_sets: exercise.target_sets,
               user_id: userId,
@@ -392,6 +464,8 @@ export default function WorkoutTemplateScreen() {
             onDelete={handleDeleteExercise}
             onEdit={handleEditExercise}
             onMove={handleMoveExercise}
+            onToggleSuperset={handleToggleSuperset}
+            previousExercise={templateExercises[index - 1] ?? null}
           />
         )}
         ListHeaderComponent={
@@ -617,6 +691,27 @@ const styles = StyleSheet.create({
     color: "#9CA3AF",
     fontSize: 13,
     marginTop: 5,
+  },
+  supersetBadge: {
+    color: "#A78BFA",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 1.5,
+    marginTop: 8,
+  },
+  supersetButton: {
+    borderColor: "#A78BFA",
+    borderRadius: 8,
+    borderWidth: 1,
+    marginTop: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  supersetButtonText: {
+    color: "#A78BFA",
+    fontSize: 13,
+    fontWeight: "700",
+    textAlign: "center",
   },
   moveActions: {
     flexDirection: "row",

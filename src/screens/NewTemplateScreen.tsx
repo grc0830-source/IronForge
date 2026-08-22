@@ -150,6 +150,23 @@ import { useAuth } from "../providers/AuthProvider";
     : "Save a reusable routine. Exercises and targets come next."}
 </Text>
 
+        {!isEditing ? (
+          <Pressable
+            accessibilityHint="Builds editable templates from your coaching profile"
+            accessibilityLabel="Build my program with Fortomnia"
+            accessibilityRole="button"
+            onPress={() => router.push("/program-builder")}
+            style={styles.builderButton}
+          >
+            <Text style={styles.builderLabel}>FREE TRAINING INTELLIGENCE</Text>
+            <Text style={styles.builderTitle}>Build my program</Text>
+            <Text style={styles.builderDescription}>
+              Generate 2–5 explainable workout templates from your goals and
+              training style.
+            </Text>
+          </Pressable>
+        ) : null}
+
         <Text style={styles.label}>Template name</Text>
         <TextInput
           accessibilityLabel="Template name"
@@ -258,6 +275,32 @@ const styles = StyleSheet.create({
     lineHeight: 24,
     marginBottom: 32,
     marginTop: 8,
+  },
+  builderButton: {
+    backgroundColor: "#15100C",
+    borderColor: "#F97316",
+    borderRadius: 14,
+    borderWidth: 1,
+    marginBottom: 26,
+    padding: 17,
+  },
+  builderLabel: {
+    color: "#F97316",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1.3,
+  },
+  builderTitle: {
+    color: "#FFFFFF",
+    fontSize: 20,
+    fontWeight: "800",
+    marginTop: 6,
+  },
+  builderDescription: {
+    color: "#9CA3AF",
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 6,
   },
   label: {
     color: "#D1D5DB",
